@@ -588,6 +588,65 @@ def test_cpu_sm107_mtp_preference_boundaries(
         assert order == baseline
 
 
+@pytest.mark.parametrize("batch", [64, 96])
+@pytest.mark.parametrize(
+    "heads,q_len,promoted",
+    [
+        (96, 2, True),
+        (96, 3, False),
+        (96, 4, False),
+        (96, 5, True),
+        (96, 6, True),
+        (96, 7, True),
+        (96, 8, True),
+        (128, 2, True),
+        (128, 3, False),
+        (128, 4, True),
+        (128, 5, False),
+        (128, 6, True),
+        (128, 7, True),
+        (128, 8, True),
+    ],
+)
+def test_cpu_sm107_mtp_relative_fill_regions(
+    _cpu_sm107_cute_planners, batch, heads, q_len, promoted
+):
+    wrapper, kwargs, _ = _cpu_mtp_request(
+        batch=batch, num_heads=heads, q_len=q_len, graph=True
+    )
+    wrapper.plan(**kwargs)
+    assert wrapper._planned_backend_name == (
+        "cute-dsl-rubin-mtp" if promoted else "cute-dsl-monolithic"
+    )
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        dict(batch=63),
+        dict(batch=97),
+        dict(graph=False),
+        dict(page_size=64),
+        dict(kv_len=8191),
+        dict(kv_len=8193),
+        dict(capacity=8320),
+        dict(q_lens=[6] * 63 + [7]),
+        dict(kv_lens=[8192] * 63 + [8191]),
+        dict(q_data_type=torch.bfloat16),
+        dict(output_dtype=torch.bfloat16),
+        dict(causal=False),
+        dict(scale_mode="bmm-scalar"),
+        dict(enable_pdl=True),
+    ],
+)
+def test_cpu_sm107_mtp_relative_fill_exclusions(_cpu_sm107_cute_planners, changes):
+    options = dict(num_heads=96, q_len=6, graph=True)
+    options.update(changes)
+    wrapper, kwargs, _ = _cpu_mtp_request(**options)
+    wrapper.plan(**kwargs)
+    assert wrapper._planned_backend_name == "cute-dsl-monolithic"
+
+
 def test_cpu_sm107_mtp_dense_capacity_includes_prepared_alignment(
     _cpu_sm107_cute_planners,
 ):

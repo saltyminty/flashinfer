@@ -1811,18 +1811,20 @@ def test_mtp_kv_indexing_rejects_unrepresentable_dimensions_or_strides(shape, st
 
 
 @pytest.mark.parametrize(
-    "graph,batch,q_len,page_size,kv_len,lse_mode",
+    "graph,batch,q_len,page_size,kv_len,lse_mode,heads",
     [
-        (True, 64, 4, 64, 129, "none"),
-        (True, 128, 2, 128, 1024, "basee"),
-        (True, 64, 4, 128, 2048, "base2"),
-        (False, 64, 4, 64, 8192, "none"),
-        (False, 32, 4, 128, 32768, "base2"),
-        (False, 64, 2, 128, 32768, "basee"),
+        (True, 64, 4, 64, 129, "none", 128),
+        (True, 128, 2, 128, 1024, "basee", 128),
+        (True, 64, 4, 128, 2048, "base2", 128),
+        (False, 64, 4, 64, 8192, "none", 128),
+        (False, 32, 4, 128, 32768, "base2", 128),
+        (False, 64, 2, 128, 32768, "basee", 128),
+        *[(True, 64, q, 128, 8192, "base2", 96) for q in (2, 5, 6, 7, 8)],
+        *[(True, 64, q, 128, 8192, "base2", 128) for q in (2, 4, 6, 7, 8)],
     ],
 )
 def test_auto_rubin_mtp_planned_regions(
-    case, monkeypatch, graph, batch, q_len, page_size, kv_len, lse_mode
+    case, monkeypatch, graph, batch, q_len, page_size, kv_len, lse_mode, heads
 ):
     if torch.cuda.get_device_capability() != (10, 7):
         pytest.skip("requires SM107")
@@ -1830,7 +1832,7 @@ def test_auto_rubin_mtp_planned_regions(
     pages = (kv_len + 127) // 128 * (128 // page_size)
     scale = 1 / 24
     case.update(
-        query=(torch.randn(batch * q_len, 128, 576, device="cuda") * 0.3).to(
+        query=(torch.randn(batch * q_len, heads, 576, device="cuda") * 0.3).to(
             torch.float8_e4m3fn
         ),
         kv=(
@@ -1868,15 +1870,18 @@ def test_auto_rubin_mtp_planned_regions(
         output_dtype=torch.float8_e4m3fn,
         scale_mode="default",
         lse_mode=lse_mode,
+        num_heads=heads,
     )
     assert wrapper._planned_backend_name == "cute-dsl-rubin-mtp"
     state = wrapper._planned_backend._execution_state
     assert state.split_kv == 1
     out = torch.empty(
-        (batch * q_len, 128, 512), dtype=torch.float8_e4m3fn, device="cuda"
+        (batch * q_len, heads, 512), dtype=torch.float8_e4m3fn, device="cuda"
     )
     lse = (
-        torch.empty((batch * q_len, 128), device="cuda") if lse_mode != "none" else None
+        torch.empty((batch * q_len, heads), device="cuda")
+        if lse_mode != "none"
+        else None
     )
 
     def run():

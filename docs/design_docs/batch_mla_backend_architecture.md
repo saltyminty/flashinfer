@@ -387,7 +387,11 @@ in `plan()`. An explicit request evaluates only that backend. For `backend="auto
 request-based preference policy on exact SM100 and SM103. Exact SM107 starts
 from that order and prefers Rubin MTP over monolithic CuTe for bounded FP8
 regions: larger batches with short KV in graph mode, and uniform long-context
-workloads in eager mode. `_ordered_sm107_backends` defines the precise shape,
+workloads in eager mode. An additional K8K graph region uses relative query-row
+fill: mixed/monolithic utilization must be at least 5/6, with H96/H128,
+B64..96, uniform Q2..8 and K8192, page128, and exact K8192 table capacity.
+This bounds the added preference to measured native split1 workloads and leaves
+the earlier H128/Q2/Q4 rules intact. `_ordered_sm107_backends` defines the precise shape,
 layout, scale, initial-length, and page-table capacity bounds. These are
 plan-time performance heuristics; later live-length changes retain the selected
 backend and may change which backend would be fastest. SM80, supported SM90, and supported
@@ -657,9 +661,10 @@ Q=2..8. Equal contiguous row views use the largest aligned divisor of H*Q
 that fits M256. H96/Q2 and Q4 use 192-row views; H96/Q8 packs 768 rows into three full M256 tiles. The fallback halves each
 view into two row blocks without copying. Odd Q is also supported; H128/Q5
 currently uses four 160-row views, one extra M256 work unit compared with
-an unequal full/tail packing. Auto preference currently retains the measured
-H128/Q2/Q4 regions; the other supported cases are available through explicit
-backend selection and autotuning. It supports no LSE, base-2 LSE, or base-e LSE; its scale mode is
+an unequal full/tail packing. Auto preference retains the earlier measured
+H128/Q2/Q4 regions and adds the relative-fill K8K graph region described above.
+Other supported cases are available through explicit backend selection and
+autotuning. It supports no LSE, base-2 LSE, or base-e LSE; its scale mode is
 `default` or `bmm-scalar`, with a positive, finite effective FP32 log2 softmax
 scale and a finite FP32 BMM2 scale. It rejects sinks, PDL, profiler,
 skip-softmax, and per-tensor output scaling. Its kernel reads live device

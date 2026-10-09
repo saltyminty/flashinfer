@@ -264,6 +264,54 @@ def ordered_sm100_backends(args):
     return order
 
 
+def _prefer_sm107_mtp_row_utilization(args: _MLAPlanArguments) -> bool:
+    """Restrict the relative-fill rule to measured K8K graph workloads."""
+    if (
+        not args._use_cuda_graph
+        or args.q_data_type != torch.float8_e4m3fn
+        or args.kv_data_type != torch.float8_e4m3fn
+        or args.output_dtype != torch.float8_e4m3fn
+        or args.num_heads not in (96, 128)
+        or args.head_dim_ckv != 512
+        or args.head_dim_kpe != 64
+        or args.page_size != 128
+        or not args.causal
+        or args.query_layout != "packed"
+        or args.kv_cache_layout != "packed"
+        or args.scale_mode != "default"
+        or args.sm_scale <= 0
+        or args.output_scale != "none"
+        or args.use_sinks
+        or args.use_profiler
+        or args.skip_softmax
+        or args.enable_pdl is True
+    ):
+        return False
+    tables = args.metadata.block_tables
+    if tables is None or tables.shape[1] * args.page_size != 8192:
+        return False
+    csr = args.csr()
+    offsets = csr.qo_indptr.cpu().tolist()
+    lengths = csr.kv_len_arr.cpu().tolist()
+    q_lens = [end - begin for begin, end in zip(offsets, offsets[1:], strict=False)]
+    if (
+        not 64 <= len(lengths) <= 96
+        or len(q_lens) != len(lengths)
+        or q_lens[0] not in range(2, 9)
+        or any(q != q_lens[0] for q in q_lens)
+        or any(k != 8192 for k in lengths)
+    ):
+        return False
+    rows = args.num_heads * q_lens[0]
+    # Match the kernel's equal-view packing without importing CuTe DSL.
+    view_rows = max(r for r in range(16, 257, 16) if rows % r == 0)
+    mono_tiles = (rows + 127) // 128
+    mixed_units = rows // view_rows
+    # Relative fill = mono_tiles / (2 * mixed_units). Measured 75% loses,
+    # while 5/6 wins; do not interpolate an unmeasured 80% threshold.
+    return 3 * mono_tiles >= 5 * mixed_units
+
+
 def _ordered_sm107_backends(args: _MLAPlanArguments) -> tuple[str, ...]:
     """Prefer Rubin MTP in measured regions of the initial planned workload.
 
@@ -271,6 +319,12 @@ def _ordered_sm107_backends(args: _MLAPlanArguments) -> tuple[str, ...]:
     are performance heuristics, not additional backend support restrictions.
     """
     order = ordered_sm100_backends(args)
+    if _prefer_sm107_mtp_row_utilization(args):
+        remaining = tuple(
+            backend for backend in order if backend != "cute-dsl-rubin-mtp"
+        )
+        position = remaining.index("cute-dsl-monolithic")
+        return remaining[:position] + ("cute-dsl-rubin-mtp",) + remaining[position:]
     if (
         args.q_data_type != torch.float8_e4m3fn
         or args.kv_data_type != torch.float8_e4m3fn

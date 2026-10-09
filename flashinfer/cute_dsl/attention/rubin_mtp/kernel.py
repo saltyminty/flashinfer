@@ -136,10 +136,11 @@ def _store_empty_output(mO, mLSE, first_head, rows, query, batch, tidx, threads)
     # Only the correction owner calls this, in the workspace-free K=0 case.
     thread = tidx % threads
     for offset in range(thread, rows * 512, threads):
-        mO[first_head + offset // 512, offset % 512, query, batch] = (
-            cutlass.Float8E4M3FN(0.0)
-        )
-    if thread < rows:
+        if first_head + offset // 512 < mO.shape[0]:
+            mO[first_head + offset // 512, offset % 512, query, batch] = (
+                cutlass.Float8E4M3FN(0.0)
+            )
+    if thread < rows and first_head + thread < mLSE.shape[0]:
         mLSE[first_head + thread, query, batch] = -cutlass.Float32.inf
 
 
@@ -257,6 +258,7 @@ class RubinMultiHeadLatentAttentionForwardFP8TwoPlusTwo:
     causal_num_heads: int
     causal_seq_len_q: int
     causal_fold_ratio: int
+    causal_rows_per_work: int
     _fb: "_MixedFallbackPrep"
 
     def __init__(
@@ -4361,10 +4363,10 @@ class RubinMultiHeadLatentAttentionForwardFP8TwoPlusTwo:
             for i in cutlass.range_constexpr(cute.size(tTR_rAcc)):
                 if is_last_tile:
                     q_tok = (
-                        common_params.blk_coord[2] * self.causal_fold_ratio
-                        + (common_params.blk_coord[0] * cta_qk_tiler[0] + tTR_tS[i][0])
-                        // self.causal_num_heads
-                    )
+                        common_params.blk_coord[2] * self.causal_rows_per_work
+                        + common_params.blk_coord[0] * cta_qk_tiler[0]
+                        + tTR_tS[i][0]
+                    ) // self.causal_num_heads
                     k_bound = common_params.K - self.causal_seq_len_q + 1 + q_tok
                     tTR_rAcc[i] = (
                         tTR_rAcc[i]
@@ -4410,10 +4412,10 @@ class RubinMultiHeadLatentAttentionForwardFP8TwoPlusTwo:
             if is_last_tile:
                 for i in cutlass.range_constexpr(cute.size(tTR_rAcc)):
                     q_tok = (
-                        common_params.blk_coord[2] * self.causal_fold_ratio
-                        + (common_params.blk_coord[0] * cta_qk_tiler[0] + tTR_tS[i][0])
-                        // self.causal_num_heads
-                    )
+                        common_params.blk_coord[2] * self.causal_rows_per_work
+                        + common_params.blk_coord[0] * cta_qk_tiler[0]
+                        + tTR_tS[i][0]
+                    ) // self.causal_num_heads
                     k_bound = common_params.K - self.causal_seq_len_q + 1 + q_tok
                     tTR_rAcc[i] = (
                         tTR_rAcc[i]
@@ -5712,9 +5714,9 @@ class RubinMultiHeadLatentAttentionForwardFP8TwoPlusTwo:
         # page size equals 1 is prohibited by tma specification, not 128B aligned.
         if mma_qk_tiler_mn[1] % page_size != 0 or page_size == 1:
             return False
-        # QK M tile must cover the full head count: the 2x1 cluster splits M
-        # across CTAs so per-CTA M = tile_M / 2 = H / 2.
-        if mma_qk_tiler_mn[0] != H:
+        # H is the folded query-row extent. H96 pairs have 192 valid rows
+        # inside M256; TMA bounds and output predicates preserve the tail.
+        if H <= 0 or H > mma_qk_tiler_mn[0]:
             return False
         # Only (256, 256) is currently supported for the PV tile. Other shapes
         # require retuning the coupled 4-CTA QK/PV topology and its N=32
@@ -5739,6 +5741,7 @@ class _MixedFallbackBase(_BlackwellMLAFP8):
     """
 
     causal_num_heads: int
+    causal_rows_per_work: int
 
     arch_str = "sm_107"
     arch_name = "Rubin SM107"
@@ -6055,7 +6058,7 @@ class _MixedFallbackBase(_BlackwellMLAFP8):
                     # This independent mixed copy always uses original-query causality.
                     # Fallback s enumerates half-M row blocks, not query tokens.
                     q_tok = (
-                        common_params.blk_coord[1] * self.mma_qk_tiler[0]
+                        common_params.blk_coord[1] * self.causal_rows_per_work
                         + common_params.blk_coord[0] * cta_m_rows
                         + tTR_tS[i][0]
                     ) // self.causal_num_heads
@@ -6104,7 +6107,7 @@ class _MixedFallbackBase(_BlackwellMLAFP8):
                     # This independent mixed copy always uses original-query causality.
                     # Fallback s enumerates half-M row blocks, not query tokens.
                     q_tok = (
-                        common_params.blk_coord[1] * self.mma_qk_tiler[0]
+                        common_params.blk_coord[1] * self.causal_rows_per_work
                         + common_params.blk_coord[0] * cta_m_rows
                         + tTR_tS[i][0]
                     ) // self.causal_num_heads

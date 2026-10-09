@@ -23,7 +23,7 @@ from .cute_dsl_monolithic_backend import (
 class _BatchMLAPagedAttentionCuteDslRubinMtpBackend(
     _BatchMLAPagedAttentionCuteDslMonolithicBackend
 ):
-    """Causal, uniform Q2/Q4 FP8 MTP with live per-request KV lengths.
+    """Causal, uniform Q2..Q8 FP8 MTP with live per-request KV lengths.
 
     Positive tactics are static split budgets. They never depend on device
     length values, so a retained tactic remains usable as those values change.
@@ -52,13 +52,13 @@ class _BatchMLAPagedAttentionCuteDslRubinMtpBackend(
             args.q_data_type != torch.float8_e4m3fn
             or args.kv_data_type != torch.float8_e4m3fn
             or args.output_dtype != torch.float8_e4m3fn
-            or args.num_heads != 128
+            or args.num_heads not in (96, 128)
             or args.head_dim_ckv != 512
             or args.head_dim_kpe != 64
             or args.page_size not in (64, 128)
         ):
             raise _BackendPlanUnsupportedError(
-                "cute-dsl-rubin-mtp requires FP8 E4M3 query/KV/output, H=128, "
+                "cute-dsl-rubin-mtp requires FP8 E4M3 query/KV/output, H=96/128, "
                 "latent512+RoPE64 and page64/128."
             )
         super().preflight_plan_from_wrapper(args)
@@ -107,9 +107,9 @@ class _BatchMLAPagedAttentionCuteDslRubinMtpBackend(
         enable_pdl,
         num_kv_splits=None,
     ):
-        if is_var_q or use_sinks or enable_pdl or q_len not in (2, 4):
+        if is_var_q or use_sinks or enable_pdl or q_len not in range(2, 9):
             raise _CuteDslKernelUnsupportedError(
-                "cute-dsl-rubin-mtp requires uniform Q2/Q4 without sinks or PDL."
+                "cute-dsl-rubin-mtp requires uniform Q2..Q8 without sinks or PDL."
             )
         try:
             implementation = self._implementation()

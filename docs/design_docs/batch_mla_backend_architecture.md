@@ -652,8 +652,14 @@ graph planning. For one query, causal and noncausal masks are equivalent.
 DCP, sparse, HCA and DSV4 remain outside this wrapper.
 
 Rubin MTP is wrapper-only and requires exact SM107, FP8 E4M3 query/KV/output,
-128 heads, latent/RoPE widths 512/64, page size 64/128, and uniform causal Q=2
-or Q=4. It supports no LSE, base-2 LSE, or base-e LSE; its scale mode is
+96 or 128 heads, latent/RoPE widths 512/64, page size 64/128, and uniform causal
+Q=2..8. Equal contiguous row views use the largest aligned divisor of H*Q
+that fits M256. H96/Q2 and Q4 use 192-row views; H96/Q8 packs 768 rows into three full M256 tiles. The fallback halves each
+view into two row blocks without copying. Odd Q is also supported; H128/Q5
+currently uses four 160-row views, one extra M256 work unit compared with
+an unequal full/tail packing. Auto preference currently retains the measured
+H128/Q2/Q4 regions; the other supported cases are available through explicit
+backend selection and autotuning. It supports no LSE, base-2 LSE, or base-e LSE; its scale mode is
 `default` or `bmm-scalar`, with a positive, finite effective FP32 log2 softmax
 scale and a finite FP32 BMM2 scale. It rejects sinks, PDL, profiler,
 skip-softmax, and per-tensor output scaling. Its kernel reads live device

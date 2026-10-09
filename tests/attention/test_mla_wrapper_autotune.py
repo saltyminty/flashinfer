@@ -1086,7 +1086,11 @@ def test_mtp_query_contract_is_independent_of_live_kv_support(mtp_adapter, chang
 @pytest.mark.parametrize(
     "name", ["cute-dsl-rubin-mtp", "cute-dsl-monolithic", "autotune"]
 )
-def test_rubin_mtp_planned_fp8_output_and_snapshot(case, tuner, monkeypatch, name):
+@pytest.mark.parametrize("heads", [96, 128])
+@pytest.mark.parametrize("q_len", range(2, 9))
+def test_rubin_mtp_planned_fp8_output_and_snapshot(
+    case, tuner, monkeypatch, name, heads, q_len
+):
     from flashinfer.mla._batch_mla._backends.cute_dsl_rubin_mtp_backend import (
         _BatchMLAPagedAttentionCuteDslRubinMtpBackend as Mtp,
     )
@@ -1094,11 +1098,13 @@ def test_rubin_mtp_planned_fp8_output_and_snapshot(case, tuner, monkeypatch, nam
     if torch.cuda.get_device_capability() != (10, 7):
         pytest.skip("requires SM107")
     case.update(
-        query=(torch.randn(4, 128, 576, device="cuda") * 0.3).to(torch.float8_e4m3fn),
+        query=(torch.randn(2 * q_len, heads, 576, device="cuda") * 0.3).to(
+            torch.float8_e4m3fn
+        ),
         kv=(torch.randn(16, 64, 576, device="cuda") * 0.3).to(torch.float8_e4m3fn),
         tables=torch.arange(16, device="cuda", dtype=torch.int32).reshape(2, 8),
         lengths=[257, 511],
-        offsets=[0, 2, 4],
+        offsets=[0, q_len, 2 * q_len],
     )
     if name == "autotune":
         monkeypatch.setattr(
@@ -1118,9 +1124,13 @@ def test_rubin_mtp_planned_fp8_output_and_snapshot(case, tuner, monkeypatch, nam
         q_data_type=torch.float8_e4m3fn,
         kv_data_type=torch.float8_e4m3fn,
         output_dtype=torch.float8_e4m3fn,
+        num_heads=heads,
     )
     inputs = _inputs(case, lse=True)
-    inputs["out"] = torch.empty((4, 128, 512), device="cuda", dtype=torch.float8_e4m3fn)
+    inputs["out"] = torch.empty(
+        (2 * q_len, heads, 512), device="cuda", dtype=torch.float8_e4m3fn
+    )
+    inputs["lse"] = torch.empty((2 * q_len, heads), device="cuda", dtype=torch.float32)
     expected, expected_lse = _reference(case)
     with flashinfer.autotune(name == "autotune"):
         out, lse = wrapper.run(**inputs)

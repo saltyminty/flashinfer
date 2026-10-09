@@ -30,6 +30,19 @@ MAX_SPLITS = 32
 _INDEX_LIMIT = 1 << 31
 
 
+def _query_tile_layout(num_heads: int, seq_len_q: int) -> tuple[int, int]:
+    """Partition flattened query rows into equal contiguous descriptor views.
+
+    Choose the largest aligned divisor fitting M256. Every view halves
+    exactly into the fallback's shared workspace views, including odd Q.
+    Existing Q2/Q4/Q8 layouts remain unchanged. H128/Q5 needs four M256
+    views here, although an unequal full/tail layout could use three.
+    """
+    total_rows = num_heads * seq_len_q
+    rows = max(r for r in range(16, 257, 16) if total_rows % r == 0)
+    return rows, total_rows // rows
+
+
 @functools.cache
 def _check_compiler_compatibility() -> None:
     """Refuse a compiler lacking the Rubin mixed-cluster pipeline, lazily."""
@@ -85,8 +98,8 @@ def _check_can_implement(
         torch_dtype != torch.float8_e4m3fn
         or torch_out_dtype != torch.float8_e4m3fn
         or page_size not in (64, 128)
-        or num_heads != 128
-        or seq_len_q not in (2, 4)
+        or num_heads not in (96, 128)
+        or seq_len_q not in range(2, 9)
         or kv_lora_rank != 512
         or qk_rope_head_dim != 64
         or is_var_split_kv
@@ -94,8 +107,8 @@ def _check_can_implement(
         or cp_world != 1
     ):
         raise ValueError(
-            "cute-dsl-rubin-mtp requires FP8 E4M3FN input/output, H=128, "
-            "uniform Q=2/4, latent=512, RoPE=64, page=64/128, and no DCP"
+            "cute-dsl-rubin-mtp requires FP8 E4M3FN input/output, H=96/128, "
+            "uniform Q=2..8, latent=512, RoPE=64, page=64/128, and no DCP"
         )
 
 
@@ -142,8 +155,8 @@ def _get_split_kv_and_workspace_size(
     num_kv_splits: Optional[int] = None,
 ) -> tuple[int, int]:
     """Return an exact split budget and byte capacity, with zero bytes at one."""
-    if B <= 0 or q_len not in (2, 4) or H != 128 or kv_lora_rank != 512:
-        raise ValueError("Rubin MTP workspace requires B>0, Q=2/4, H=128, D=512")
+    if B <= 0 or q_len not in range(2, 9) or H not in (96, 128) or kv_lora_rank != 512:
+        raise ValueError("Rubin MTP workspace requires B>0, Q=2..8, H=96/128, D=512")
     # Q is folded as a view; its combined 576-element row stride is retained.
     if B * q_len * H * (kv_lora_rank + 64) >= _INDEX_LIMIT:
         raise ValueError("query exceeds the Rubin MTP signed 32-bit indexing range")
@@ -155,7 +168,8 @@ def _get_split_kv_and_workspace_size(
         raise ValueError("num_kv_splits must be an integer or None")
     if num_kv_splits is None or num_kv_splits == -1:
         tiles = (max_seq_len + 127) // 128
-        candidate = min(tiles, max(1, max_active_blocks // B // q_len))
+        _, q_tiles = _query_tile_layout(H, q_len)
+        candidate = min(tiles, max(1, max_active_blocks // B // (2 * q_tiles)))
         tiles_per_split = (tiles + candidate - 1) // candidate
         split_kv = min(MAX_SPLITS, (tiles + tiles_per_split - 1) // tiles_per_split)
     else:
@@ -196,6 +210,7 @@ def _get_compiled_mla_kernel(
     enable_pdl: bool = False,
     enable_dcp: bool = False,
     cp_world: int = 1,
+    force_branch: str = "auto",
 ):
     if torch.cuda.is_current_stream_capturing():
         raise RuntimeError("Rubin MTP must be prepared before CUDA graph capture")
@@ -241,11 +256,13 @@ def _get_compiled_mla_kernel(
         False,
         False,
         use_fp16_softmax=False,
-        force_branch="auto",
+        force_branch=force_branch,
     )
-    kernel.causal_num_heads = 128
+    folded_rows, folded_q = _query_tile_layout(num_heads, seq_len_q)
+    kernel.causal_num_heads = num_heads
     kernel.causal_seq_len_q = seq_len_q
     kernel.causal_fold_ratio = 2
+    kernel.causal_rows_per_work = folded_rows
     kernel._fb = _MixedFallbackPrep(
         cutlass.Float32,
         cutlass.Float32,
@@ -258,11 +275,12 @@ def _get_compiled_mla_kernel(
         False,
         False,
         fold_sq=False,
-        num_heads=128,
+        num_heads=num_heads,
         seq_len_q=seq_len_q,
         use_fp16_softmax=False,
     )
-    kernel._fb.causal_num_heads = 128
+    kernel._fb.causal_num_heads = num_heads
+    kernel._fb.causal_rows_per_work = folded_rows // 2
     kernel._fb.early_compute_clc = True
     kernel._fb.merge_softmax_loops = False
 
@@ -341,19 +359,18 @@ def _get_compiled_mla_kernel(
             _check_tensor_indexing(tensor, name)
         _check_kv_tensor_indexing(c_nope, "KV latent")
         _check_kv_tensor_indexing(c_pe, "KV rope")
-        # Fold pairs of original query tokens into 256 rows without copying.
+        # Balanced contiguous views preserve real bounds without copying.
         batch = q_nope.shape[0]
-        folded_q = seq_len_q // 2
-        q_nope = q_nope.view(batch, folded_q, 256, 512).permute(2, 3, 1, 0)
-        q_pe = q_pe.view(batch, folded_q, 256, 64).permute(2, 3, 1, 0)
+        q_nope = q_nope.view(batch, folded_q, folded_rows, 512).permute(2, 3, 1, 0)
+        q_pe = q_pe.view(batch, folded_q, folded_rows, 64).permute(2, 3, 1, 0)
         compiled(
             q_nope,
             q_pe,
             c_nope.permute(1, 2, 0),
             c_pe.permute(1, 2, 0),
             block_tables.T,
-            out.view(batch, folded_q, 256, 512).permute(2, 3, 1, 0),
-            lse.view(batch, folded_q, 256).permute(2, 1, 0),
+            out.view(batch, folded_q, folded_rows, 512).permute(2, 3, 1, 0),
+            lse.view(batch, folded_q, folded_rows).permute(2, 1, 0),
             workspace,
             splits,
             seq_lens,
@@ -429,10 +446,10 @@ def cute_dsl_mla_decode(
     causal_seqlens_kv_global=None,
     num_kv_splits=None,
 ):
-    """Run absorbed MLA with uniform Q=2/4 and live per-request KV lengths."""
+    """Run absorbed MLA with uniform Q=2..8 and live per-request KV lengths."""
     _validate_mtp_scales(softmax_scale, output_scale)
     if query.ndim != 4:
-        raise ValueError("Rubin MTP query must have shape [B,Q,128,576]")
+        raise ValueError("Rubin MTP query must have shape [B,Q,H,576]")
     B, Q, H, D = query.shape
     dtype = out.dtype if out is not None else out_dtype or torch.float8_e4m3fn
     if kv_cache.ndim == 4 and kv_cache.shape[1] == 1:

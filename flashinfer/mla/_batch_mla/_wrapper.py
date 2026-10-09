@@ -289,7 +289,7 @@ class BatchMLAPagedAttentionWrapper:
             See ``_auto_policy.py``.
             Explicit requests remain strict; ``"cute-dsl"`` is a family alias.
             ``"cute-dsl-rubin-mtp"`` supports SM107 causal absorbed MLA with
-            uniform Q=2/4, 128 heads, latent/RoPE widths 512/64, page size
+            uniform Q=2..8, 96 or 128 heads, latent/RoPE widths 512/64, page size
             64/128, and FP8 E4M3 query, KV, and output tensors. It requires
             a CuTe DSL compiler with native SM107 and mixed-CGA support.
             ``"autotune"`` benchmarks and selects among eligible backends during

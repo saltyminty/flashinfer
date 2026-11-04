@@ -35,9 +35,20 @@ def _mm_bf16_fingerprint(N: int, K: int) -> str:
     return spec_fingerprint(K, "bf16", chunks_for(N, K))
 
 
+def _attention_fingerprint(head_dim: int) -> str:
+    from ..attention.batch_invariant.spec import spec_fingerprint
+
+    return spec_fingerprint(head_dim)
+
+
 #: The FlashInfer APIs with a batch-invariant class, by API name.
 CLASSES: Dict[str, ClassInfo] = {
     "mm_bf16": ClassInfo("gemm.bf16", ("N", "K"), _mm_bf16_fingerprint),
+    # the three attention wrappers compute one class per head dim: a token's output depends on its KV position, its head and the
+    # window alone, so prefill and decode (and the paged and ragged KV layouts) are one class
+    "BatchDecodeWithPagedKVCacheWrapper": ClassInfo("attention.bf16", ("head_dim",), _attention_fingerprint),
+    "BatchPrefillWithPagedKVCacheWrapper": ClassInfo("attention.bf16", ("head_dim",), _attention_fingerprint),
+    "BatchPrefillWithRaggedKVCacheWrapper": ClassInfo("attention.bf16", ("head_dim",), _attention_fingerprint),
 }
 
 
@@ -51,6 +62,11 @@ def fingerprint(op: str, **dims) -> str:
 
     ``mm_bf16`` takes the weight shape ``N, K``: the K steps of the fold and the chunk count (a function of the
     weight shape alone) are the specification; M, the configuration and the weight's layout do not enter it.
+
+    The attention wrappers take ``head_dim``: the tile and chunk grid, the online-softmax step and the chunk merge are
+    functions of the head dim alone; the batch, the sequence lengths, the page size, the KV layout and the configuration
+    do not enter it, and ``BatchPrefillWithPagedKVCacheWrapper``, ``BatchDecodeWithPagedKVCacheWrapper`` and
+    ``BatchPrefillWithRaggedKVCacheWrapper`` share the fingerprint (their outputs for one token are the same bits).
 
     >>> fingerprint("mm_bf16", N=4096, K=4096)  # doctest: +SKIP
     'gemm-bf16-kfold-...'

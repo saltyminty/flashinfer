@@ -38,7 +38,7 @@ def test_generated_cases_are_current():
         assert f"theorem {name} " in committed
     with open(os.path.join(lean_cases.LEAN_DIR, "Axioms.lean")) as f:
         axioms = f.read()
-    for name in lean_cases.DECIDED_THEOREMS:
+    for name in lean_cases.DECIDED_THEOREMS + lean_cases.MODULE_DECIDED_THEOREMS:
         assert f"``BIK.{name}" in axioms, f"{name} is not pinned in Axioms.lean"
 
 
@@ -81,6 +81,9 @@ def test_lean_model_matches_python_engine_and_spec():
         elif tag == "chunks":
             _, N, K, C = line.split(" ")
             lean[("chunks", int(N), int(K))] = int(C)
+        elif tag == "attn":
+            _, name, sx = line.split(" ", 2)
+            lean[("attn", name)] = sx
         else:
             raise AssertionError(f"unexpected conformance line: {line[:80]}")
     checked = 0
@@ -96,6 +99,9 @@ def test_lean_model_matches_python_engine_and_spec():
     for N, K, C in lean_cases.chunk_table():
         assert lean[("chunks", N, K)] == C, (N, K)
         checked += 1
+    for name, *_, sx in lean_cases.attn_cases():
+        assert lean[("attn", name)] == sx, name
+        checked += 1
     assert checked == len(lean) >= 20
 
 
@@ -104,6 +110,5 @@ def test_axioms_policy():
     r = _lake("exe", "axioms", timeout=600)
     assert r.returncode == 0, r.stdout[-2000:] + r.stderr[-3000:]
     assert "0 with sorry, 0 violations" in r.stdout, r.stdout
-    assert f"{len(lean_cases.DECIDED_THEOREMS)} named table theorems" in r.stdout, (
-        r.stdout
-    )
+    n_decided = len(lean_cases.DECIDED_THEOREMS) + len(lean_cases.MODULE_DECIDED_THEOREMS)
+    assert f"{n_decided} named table theorems" in r.stdout, r.stdout

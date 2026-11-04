@@ -17,10 +17,12 @@ open Lean
 
 def standardAxioms : List Name := [``propext, ``Classical.choice, ``Quot.sound]
 def decidedAxiom : Name := ``Lean.ofReduceBool
-/-- The named `native_decide` theorems: the exhaustive checks over the generator's configuration space and the
-dispatcher's picks (hundreds of records, beyond what kernel `decide` evaluates in reasonable time). -/
+/-- The named `native_decide` theorems: the exhaustive checks over the generators' configuration spaces and the GEMM
+dispatcher's picks (hundreds of records, beyond what kernel `decide` evaluates in reasonable time), the attention spec cases
+(terms of tens of kilobytes) and the attention class-separation theorems. -/
 def decidedTheorems : List Name :=
-  [``BIK.gemm_space_ok, ``BIK.gemm_space_c4_ok, ``BIK.gemm_space_c4_cta_twins, ``BIK.gemm_dispatch_in_space]
+  [``BIK.gemm_space_ok, ``BIK.gemm_space_c4_ok, ``BIK.gemm_space_c4_cta_twins, ``BIK.gemm_dispatch_in_space,
+   ``BIK.attn_a0_spec, ``BIK.attn_a1_spec, ``BIK.attn_a2_spec, ``BIK.attn_a3_spec, ``BIK.attn_a4_spec, ``BIK.attn_a5_spec, ``BIK.attn_a6_spec, ``BIK.attn_a7_spec, ``BIK.attn_space_d64_size, ``BIK.attn_space_d64_ok, ``BIK.attn_space_d128_size, ``BIK.attn_space_d128_ok, ``BIK.attn_space_d256_size, ``BIK.attn_space_d256_ok, ``BIK.Attn.output_depends_on_C, ``BIK.Attn.output_depends_on_D, ``BIK.Attn.output_depends_on_D_64]
 def moduleOf (env : Environment) (n : Name) : Option Name :=
   match env.getModuleIdxFor? n with
   | some idx => env.header.moduleNames[idx.toNat]?

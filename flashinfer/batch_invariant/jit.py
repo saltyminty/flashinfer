@@ -32,6 +32,7 @@ _FI_DIR = Path(__file__).resolve().parents[1]  # the flashinfer package
 MODE_DIRS: Tuple[Path, ...] = (
     _FI_DIR / "batch_invariant",
     _FI_DIR / "gemm" / "batch_invariant",
+    _FI_DIR / "attention" / "batch_invariant",
 )
 
 #: Root files of every cache module, relative to the flashinfer package; the module's closure is the transitive
@@ -41,6 +42,12 @@ MODULE_ROOTS: Dict[str, Tuple[str, ...]] = {
     "batch_invariant_gemm_bf16": (
         "gemm/batch_invariant/blocks/compile.py",
         "gemm/batch_invariant/fixup.py",
+    ),
+    # the attention kernels (the row body, the Swaps-AB decode body) and the split-KV fixup share one module
+    "batch_invariant_attention": (
+        "attention/batch_invariant/blocks/compile.py",
+        "attention/batch_invariant/swaps/compile.py",
+        "attention/batch_invariant/fixup.py",
     ),
 }
 

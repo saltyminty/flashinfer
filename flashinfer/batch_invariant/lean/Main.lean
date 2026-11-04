@@ -15,3 +15,5 @@ def main : IO Unit := do
     IO.println s!"gemmout {steps} {fmt} {(outputKfold fmt ⟨0⟩ ⟨0⟩ steps).sexpr}"
   for (N, K, _) in chunkTable do
     IO.println s!"chunks {N} {K} {chunksFor N K}"
+  for (name, P) in attnCases do
+    IO.println s!"attn {name} {(Attn.output P).sexpr}"

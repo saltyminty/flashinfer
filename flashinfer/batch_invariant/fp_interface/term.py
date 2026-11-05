@@ -4,10 +4,10 @@
 
 A term records *which* operations were applied in *which* association, not their numeric value. Two
 configurations are canonical-equivalent iff they build the same term for every output element. The
-commutative primitive (``add``) normalises its operand order (IEEE addition is bitwise commutative), so
-two placements that only swap the operands of an addition compare equal. The GEMM's tensor-core step is
-an opaque primitive (:meth:`TermAlgebra.op`): the term fixes the order in which the steps are applied,
-nothing inside a step.
+commutative primitives (``add``, ``mul``) normalise their operand order (IEEE addition and multiplication are
+bitwise commutative), so two placements that only swap the operands compare equal. The GEMM's tensor-core
+step is an opaque primitive (:meth:`TermAlgebra.op`): the term fixes the order in which the steps are applied,
+nothing inside a step. A runtime scalar the kernel reads as given (the fp8 classes' ``alpha``) is a ``sym`` leaf.
 """
 
 from __future__ import annotations
@@ -66,7 +66,8 @@ class TermAlgebra:
         return self._mk("const", value, math.copysign(1.0, value))
 
     def sym(self, name: str) -> Term:
-        """A symbolic runtime scalar (the attention class's ``c = sm_scale * log2(e)`` and ``nc = -c``)."""
+        """A runtime scalar the kernel reads as given (the fp8 classes' ``alpha``, the attention class's ``c = sm_scale * log2(e)``
+        and ``nc = -c``): a leaf, not a computation."""
         return self._mk("sym", name)
 
     # -- primitives --------------------------------------------------------------
@@ -76,7 +77,7 @@ class TermAlgebra:
         return self._mk("add", a, b)
 
     def mul(self, a: Term, b: Term) -> Term:
-        """``mul.rn.f32``, commutativity-normalised."""
+        """``mul.rn.f32``, commutativity-normalised (IEEE multiplication is bitwise commutative)."""
         a, b = self._sorted2(a, b)
         return self._mk("mul", a, b)
 
@@ -176,12 +177,16 @@ def sexpr(t: Term) -> str:
             out = f"(cvt {A[1]} {A[0]})"
         elif op == "op:mma_bf16_k16":
             out = f"(mma16 {A[0]} {A[1]})"  # one tcgen05.mma K-step: (accumulator, operand slice)
+        elif op == "op:mma_fp8_k32":
+            out = f"(mma32 {A[0]} {A[1]})"  # one kind::f8f6f4 K-step of 32 fp8 elements
         elif op == "op:ab_kslice":
             out = f"(ab {A[0]} {A[1]})"  # the (A, B) K-slice of one step
         elif op == "op:a_rows":
             out = f"(a {A[0]} {A[1]})"  # A's row m at step t
         elif op == "op:b_cols":
             out = f"(b {A[0]} {A[1]})"  # B's column n at step t
+        elif op == "op:bias_col":
+            out = f"(bias {A[0]})"  # the bias of output column n, widened to binary32 exactly
         else:
             out = "(" + op + " " + " ".join(map(str, A)) + ")"
         memo[cur.uid] = out

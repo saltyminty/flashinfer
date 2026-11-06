@@ -3865,9 +3865,9 @@ class BatchPrefillWithPagedKVCacheWrapper:
                 rope_scale=rope_scale,
                 rope_theta=rope_theta,
             )
-            qo_indptr_host = qo_indptr.to("cpu", non_blocking=False)
-            self._qo_indptr_last = int(qo_indptr_host[-1].item())
+            self._qo_indptr_last = self._batch_invariant._total_q
             self._causal = causal
+            self._use_fp16_qk_reduction = False
             self._window_left = window_left
             self._sm_scale = sm_scale
             self._pos_encoding_mode = pos_encoding_mode
@@ -4686,6 +4686,18 @@ class BatchPrefillWithPagedKVCacheWrapper:
         rope_theta: Optional[float] = None,
     ) -> torch.Tensor:
         r"""Warning: This function is deprecated, please use :meth:`run` instead."""
+        if self._batch_invariant is not None:
+            self._batch_invariant.validate_forward_options(
+                sm_scale=sm_scale,
+                pos_encoding_mode=pos_encoding_mode,
+                logits_soft_cap=logits_soft_cap,
+                rope_scale=rope_scale,
+                rope_theta=rope_theta,
+                window_left=window_left,
+                causal=causal,
+                use_fp16_qk_reduction=use_fp16_qk_reduction,
+            )
+            return self.run(q, paged_kv_cache, k_scale=k_scale, v_scale=v_scale)
         self._causal = causal
         self._pos_encoding_mode = pos_encoding_mode
         self._use_fp16_qk_reduction = use_fp16_qk_reduction
@@ -4910,7 +4922,7 @@ class BatchPrefillWithPagedKVCacheWrapper:
                 out=out,
                 return_lse=return_lse,
                 lse=lse,
-                window_left=self._window_left if window_left is None else window_left,
+                window_left=window_left,
                 scales=(q_scale, k_scale, v_scale),
                 sinks=sinks,
                 kv_cache_sf=kv_cache_sf,
@@ -4918,15 +4930,6 @@ class BatchPrefillWithPagedKVCacheWrapper:
                 enable_pdl=enable_pdl,
                 use_fp16_softmax=use_fp16_softmax,
                 uses_spcompress=uses_spcompress,
-                sm_scale=self._sm_scale
-                if self._sm_scale is not None
-                else 1.0 / math.sqrt(q.shape[-1]),
-                pos_encoding_mode=self._pos_encoding_mode,
-                logits_soft_cap=self._logits_soft_cap,
-                rope_scale=self._rope_scale,
-                rope_theta=self._rope_theta,
-                causal=self._causal,
-                use_fp16_qk_reduction=getattr(self, "_use_fp16_qk_reduction", False),
             )
         _check_cached_qkv_data_type(
             q, k_cache, self._cached_q_data_type, self._cached_kv_data_type
@@ -5516,6 +5519,10 @@ class BatchPrefillWithPagedKVCacheWrapper:
         rope_theta: Optional[float] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         r"""Warning: This function is deprecated, please use :meth:`run_return_lse` instead."""
+        if self._batch_invariant is not None:
+            return self.run_return_lse(
+                q, paged_kv_cache, k_scale=k_scale, v_scale=v_scale
+            )
         self._causal = causal
         self._pos_encoding_mode = pos_encoding_mode
         self._use_fp16_qk_reduction = use_fp16_qk_reduction
@@ -6151,9 +6158,9 @@ class BatchPrefillWithRaggedKVCacheWrapper:
                 rope_scale=rope_scale,
                 rope_theta=rope_theta,
             )
-            qo_indptr_host = qo_indptr.to("cpu", non_blocking=False)
-            self._qo_indptr_last = int(qo_indptr_host[-1].item())
+            self._qo_indptr_last = self._batch_invariant._total_q
             self._causal = causal
+            self._use_fp16_qk_reduction = False
             self._window_left = window_left
             self._sm_scale = sm_scale
             self._pos_encoding_mode = pos_encoding_mode
@@ -6942,6 +6949,18 @@ class BatchPrefillWithRaggedKVCacheWrapper:
         rope_theta: Optional[float] = None,
     ) -> torch.Tensor:
         r"""Warning: This function is deprecated, please use :meth:`run` instead."""
+        if self._batch_invariant is not None:
+            self._batch_invariant.validate_forward_options(
+                sm_scale=sm_scale,
+                pos_encoding_mode=pos_encoding_mode,
+                logits_soft_cap=logits_soft_cap,
+                rope_scale=rope_scale,
+                rope_theta=rope_theta,
+                window_left=window_left,
+                causal=causal,
+                use_fp16_qk_reduction=use_fp16_qk_reduction,
+            )
+            return self.run(q, k, v)
         self._causal = causal
         self._pos_encoding_mode = pos_encoding_mode
         self._use_fp16_qk_reduction = use_fp16_qk_reduction
@@ -7090,21 +7109,12 @@ class BatchPrefillWithRaggedKVCacheWrapper:
                 out=out,
                 return_lse=return_lse,
                 lse=lse,
-                window_left=self._window_left,
+                window_left=None,
                 scales=(q_scale, k_scale, v_scale, o_scale),
                 sinks=getattr(self, "_sinks", None),
                 kv_cache_sf=kv_cache_sf,
                 skip_softmax_threshold_scale_factor=None,
                 enable_pdl=enable_pdl,
-                sm_scale=self._sm_scale
-                if self._sm_scale is not None
-                else 1.0 / math.sqrt(q.shape[-1]),
-                pos_encoding_mode=self._pos_encoding_mode,
-                logits_soft_cap=self._logits_soft_cap,
-                rope_scale=self._rope_scale,
-                rope_theta=self._rope_theta,
-                causal=self._causal,
-                use_fp16_qk_reduction=getattr(self, "_use_fp16_qk_reduction", False),
             )
         _check_cached_qkv_data_type(
             q, k, self._cached_q_data_type, self._cached_kv_data_type
@@ -7730,6 +7740,8 @@ class BatchPrefillWithRaggedKVCacheWrapper:
         rope_theta: Optional[float] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         r"""Warning: This function is deprecated, please use :meth:`run_return_lse` instead."""
+        if self._batch_invariant is not None:
+            return self.run_return_lse(q, k, v)
         self._causal = causal
         self._pos_encoding_mode = pos_encoding_mode
         self._use_fp16_qk_reduction = use_fp16_qk_reduction

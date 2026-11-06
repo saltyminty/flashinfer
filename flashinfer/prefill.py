@@ -3064,15 +3064,6 @@ class BatchPrefillWithPagedKVCacheWrapper:
         _check_workspace_buffer_alignment(
             float_workspace_buffer, "float_workspace_buffer"
         )
-        _check_kv_layout(kv_layout)
-
-        if variant_owns_mask and backend != "fa2":
-            raise ValueError(
-                "variant_owns_mask is only supported on the fa2 backend: the "
-                "SM90 (fa3) batch prefill kernels return cudaErrorNotSupported "
-                "under MaskMode.CUSTOM."
-            )
-
         self._batch_invariant = None
         if batch_invariant:
             from .attention.batch_invariant.wrappers import BatchInvariantAttention
@@ -3084,6 +3075,15 @@ class BatchPrefillWithPagedKVCacheWrapper:
                 backend,
                 jit_args,
                 use_cuda_graph=use_cuda_graph,
+            )
+
+        _check_kv_layout(kv_layout)
+
+        if variant_owns_mask and backend != "fa2":
+            raise ValueError(
+                "variant_owns_mask is only supported on the fa2 backend: the "
+                "SM90 (fa3) batch prefill kernels return cudaErrorNotSupported "
+                "under MaskMode.CUSTOM."
             )
 
         self._cute_dsl_wrapper = None
@@ -4902,6 +4902,7 @@ class BatchPrefillWithPagedKVCacheWrapper:
         check_lse_base(lse_base)
         check_lse_layout(lse_layout)
         if self._batch_invariant is not None:
+            self._batch_invariant.refuse(positional_arguments=args or None)
             return self._batch_invariant.run(
                 q,
                 k_cache,
@@ -4917,11 +4918,15 @@ class BatchPrefillWithPagedKVCacheWrapper:
                 enable_pdl=enable_pdl,
                 use_fp16_softmax=use_fp16_softmax,
                 uses_spcompress=uses_spcompress,
-                sm_scale=self._sm_scale,
+                sm_scale=self._sm_scale
+                if self._sm_scale is not None
+                else 1.0 / math.sqrt(q.shape[-1]),
                 pos_encoding_mode=self._pos_encoding_mode,
                 logits_soft_cap=self._logits_soft_cap,
                 rope_scale=self._rope_scale,
                 rope_theta=self._rope_theta,
+                causal=self._causal,
+                use_fp16_qk_reduction=getattr(self, "_use_fp16_qk_reduction", False),
             )
         _check_cached_qkv_data_type(
             q, k_cache, self._cached_q_data_type, self._cached_kv_data_type
@@ -5735,8 +5740,6 @@ class BatchPrefillWithRaggedKVCacheWrapper:
             (multi-item scoring), which selects a different mask mode.
             Defaults to ``False``.
         """
-        _check_kv_layout(kv_layout)
-
         self._batch_invariant = None
         if batch_invariant:
             from .attention.batch_invariant.wrappers import BatchInvariantAttention
@@ -5749,6 +5752,9 @@ class BatchPrefillWithRaggedKVCacheWrapper:
                 jit_args,
                 use_cuda_graph=use_cuda_graph,
             )
+
+        _check_kv_layout(kv_layout)
+
         if variant_owns_mask and backend != "fa2":
             raise ValueError(
                 "variant_owns_mask is only supported on the fa2 backend: the "
@@ -7076,6 +7082,7 @@ class BatchPrefillWithRaggedKVCacheWrapper:
         check_lse_base(lse_base)
         check_lse_layout(lse_layout)
         if self._batch_invariant is not None:
+            self._batch_invariant.refuse(positional_arguments=args or None)
             return self._batch_invariant.run(
                 q,
                 k,
@@ -7083,17 +7090,21 @@ class BatchPrefillWithRaggedKVCacheWrapper:
                 out=out,
                 return_lse=return_lse,
                 lse=lse,
-                window_left=None,
+                window_left=self._window_left,
                 scales=(q_scale, k_scale, v_scale, o_scale),
                 sinks=getattr(self, "_sinks", None),
                 kv_cache_sf=kv_cache_sf,
                 skip_softmax_threshold_scale_factor=None,
                 enable_pdl=enable_pdl,
-                sm_scale=self._sm_scale,
+                sm_scale=self._sm_scale
+                if self._sm_scale is not None
+                else 1.0 / math.sqrt(q.shape[-1]),
                 pos_encoding_mode=self._pos_encoding_mode,
                 logits_soft_cap=self._logits_soft_cap,
                 rope_scale=self._rope_scale,
                 rope_theta=self._rope_theta,
+                causal=self._causal,
+                use_fp16_qk_reduction=getattr(self, "_use_fp16_qk_reduction", False),
             )
         _check_cached_qkv_data_type(
             q, k, self._cached_q_data_type, self._cached_kv_data_type
